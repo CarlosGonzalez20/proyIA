@@ -5,7 +5,7 @@ import './App.css';
 
 // Registrar la clase del regularizador L2
 // class L2 extends tf.regularizers.L1L2 {
-//     static className = 'L2';
+//   static className = 'L2';
 // }
 // tf.serialization.registerClass(L2);
 
@@ -26,39 +26,39 @@ function App() {
   const [isModelLoading, setIsModelLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Cargar el modelo
+  // Cargar opencv y modelo IA
   useEffect(() => {
-    const loadModel = async () => {
-      try {
-        setIsModelLoading(true);
-        setError(null);
-        console.log("Cargando el modelo...");
-        
-        // Verificar que OpenCV esté cargado
-        if (!cv.getBuildInformation) {
-          throw new Error("OpenCV no se ha cargado correctamente");
+  const loadModel = async () => {
+    try {
+      setIsModelLoading(true);
+      setError(null);
+      console.log("Esperando que OpenCV cargue...");
+
+      await new Promise((resolve) => {
+        if (cv.getBuildInformation) {
+          console.log("OpenCV ya cargado");
+          resolve();
+        } else {
+          cv['onRuntimeInitialized'] = () => {
+            console.log("OpenCV cargado correctamente");
+            resolve();
+          };
         }
+      });
 
-        // Cargar el modelo
-        const loadedModel = await tf.loadLayersModel('/modelo_json/model.json');
-        setModel(loadedModel);
-        console.log("Modelo cargado correctamente");
-      } catch (err) {
-        console.error("Error cargando el modelo:", err);
-        setError(`Error al cargar el modelo: ${err.message}`);
-      } finally {
-        setIsModelLoading(false);
-      }
-    };
+      const loadedModel = await tf.loadLayersModel('/modelo_json/model.json');
+      setModel(loadedModel);
+      console.log("Modelo cargado correctamente");
+    } catch (err) {
+      console.error("Error cargando OpenCV o el modelo:", err);
+      setError(`Error al cargar dependencias: ${err.message}`);
+    } finally {
+      setIsModelLoading(false);
+    }
+  };
 
-    loadModel();
-
-    return () => {
-      if (model) {
-        model.dispose();
-      }
-    };
-  }, []);
+  loadModel();
+}, []);
 
   // Configurar canvas y eventos de dibujo
   useEffect(() => {
