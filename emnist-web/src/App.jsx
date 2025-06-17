@@ -3,12 +3,6 @@ import * as tf from '@tensorflow/tfjs';
 import cv from 'opencv-ts';
 import './App.css';
 
-// Registrar la clase del regularizador L2
-// class L2 extends tf.regularizers.L1L2 {
-//   static className = 'L2';
-// }
-// tf.serialization.registerClass(L2);
-
 const EMNIST_MAPPING = [
   '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
   'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
@@ -22,45 +16,55 @@ const EMNIST_MAPPING = [
 function App() {
   const canvasRef = useRef(null);
   const [model, setModel] = useState(null);
-  const [timerID, setTimerID] = useState(null);
   const [isModelLoading, setIsModelLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Cargar opencv y modelo IA
   useEffect(() => {
-  const loadModel = async () => {
-    try {
-      setIsModelLoading(true);
-      setError(null);
-      console.log("Esperando que OpenCV cargue...");
+    const loadModel = async () => {
+      try {
+        setIsModelLoading(true);
+        setError(null);
+        console.log("Esperando que OpenCV cargue...");
 
-      await new Promise((resolve) => {
-        if (cv.getBuildInformation) {
-          console.log("OpenCV ya cargado");
-          resolve();
-        } else {
-          cv['onRuntimeInitialized'] = () => {
-            console.log("OpenCV cargado correctamente");
+        await new Promise((resolve) => {
+          if (cv.getBuildInformation) {
             resolve();
-          };
+          } else {
+            cv['onRuntimeInitialized'] = () => {
+              resolve();
+            };
+          }
+        });
+
+        class L2 extends tf.serialization.Serializable {
+          constructor(config) {
+            super();
+            this.l2 = config.l2 != null ? config.l2 : 0.01;
+          }
+          apply(x) {
+            return tf.mul(this.l2, tf.sum(tf.square(x)));
+          }
+          getConfig() {
+            return { l2: this.l2 };
+          }
+          static className = 'L2';
         }
-      });
+        tf.serialization.registerClass(L2);
 
-      const loadedModel = await tf.loadLayersModel('/modelo_json/model.json');
-      setModel(loadedModel);
-      console.log("Modelo cargado correctamente");
-    } catch (err) {
-      console.error("Error cargando OpenCV o el modelo:", err);
-      setError(`Error al cargar dependencias: ${err.message}`);
-    } finally {
-      setIsModelLoading(false);
-    }
-  };
+        const loadedModel = await tf.loadLayersModel('/modelo_json/model.json');
+        setModel(loadedModel);
+        console.log("Modelo cargado correctamente");
+      } catch (err) {
+        console.error("Error cargando OpenCV o el modelo:", err);
+        setError(`Error al cargar dependencias: ${err.message}`);
+      } finally {
+        setIsModelLoading(false);
+      }
+    };
 
-  loadModel();
-}, []);
+    loadModel();
+  }, []);
 
-  // Configurar canvas y eventos de dibujo
   useEffect(() => {
     if (!canvasRef.current) return;
 
@@ -69,17 +73,15 @@ function App() {
     let drawing = false;
     let lastX = 0;
     let lastY = 0;
+    let hasDrawn = false;
+    let timeoutId = null;
 
     const setupCanvas = () => {
       const container = canvas.parentElement;
       canvas.width = container.clientWidth;
       canvas.height = container.clientHeight;
-      
-      // Rellenar el canvas de blanco
       ctx.fillStyle = 'white';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
-      // Configuración inicial del dibujo
       ctx.strokeStyle = 'black';
       ctx.lineWidth = 15;
       ctx.lineJoin = 'round';
@@ -89,6 +91,8 @@ function App() {
     const startDrawing = (e) => {
       drawing = true;
       [lastX, lastY] = [e.offsetX, e.offsetY];
+      hasDrawn = false;
+      if (timeoutId) clearTimeout(timeoutId);
     };
 
     const draw = (e) => {
@@ -98,18 +102,25 @@ function App() {
       ctx.lineTo(e.offsetX, e.offsetY);
       ctx.stroke();
       [lastX, lastY] = [e.offsetX, e.offsetY];
+      hasDrawn = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
     };
 
     const stopDrawing = () => {
       drawing = false;
-      clearTimeout(timerID);
-      setTimerID(setTimeout(predictAll, 2000));
+      if (!hasDrawn) return;
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        predictAll();
+        hasDrawn = false;
+      }, 3000);
     };
 
-    // Configuración inicial
     setupCanvas();
 
-    // Event listeners
     window.addEventListener('resize', setupCanvas);
     canvas.addEventListener('mousedown', startDrawing);
     canvas.addEventListener('mousemove', draw);
@@ -122,7 +133,7 @@ function App() {
       canvas.removeEventListener('mousemove', draw);
       canvas.removeEventListener('mouseup', stopDrawing);
       canvas.removeEventListener('mouseout', stopDrawing);
-      clearTimeout(timerID);
+      if (timeoutId) clearTimeout(timeoutId);
     };
   }, [model]);
 
@@ -133,14 +144,12 @@ function App() {
     const ctx = canvas.getContext('2d');
 
     try {
-      // Crear una copia del canvas para procesar
       const tempCanvas = document.createElement('canvas');
       tempCanvas.width = canvas.width;
       tempCanvas.height = canvas.height;
       const tempCtx = tempCanvas.getContext('2d');
       tempCtx.drawImage(canvas, 0, 0);
 
-      // Procesamiento con OpenCV
       const src = cv.imread(tempCanvas);
       const gray = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
@@ -148,33 +157,36 @@ function App() {
       const binary = new cv.Mat();
       cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
 
-      // Encontrar contornos
       const contours = new cv.MatVector();
       const hierarchy = new cv.Mat();
       cv.findContours(binary.clone(), contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-      // Procesar cada contorno
+      let boundingRects = [];
+
       for (let i = 0; i < contours.size(); ++i) {
         const contour = contours.get(i);
         const rect = cv.boundingRect(contour);
+        if (rect.width >= 20 && rect.height >= 20) {
+          boundingRects.push({ contour, rect });
+        }
+      }
 
-        // Filtrar contornos pequeños
-        if (rect.width < 20 || rect.height < 20) continue;
+      boundingRects.sort((a, b) => a.rect.x - b.rect.x);
 
-        // Extraer ROI
+      for (let i = 0; i < boundingRects.length; ++i) {
+        const { contour, rect } = boundingRects[i];
         const roi = binary.roi(rect);
         const resized = new cv.Mat();
         cv.resize(roi, resized, new cv.Size(28, 28), 0, 0, cv.INTER_AREA);
 
-        // Convertir a tensor
         const inputTensor = tf.tidy(() => {
           const imageData = new ImageData(28, 28);
-          for (let i = 0; i < 28 * 28; i++) {
-            const val = resized.data[i];
-            imageData.data[i * 4] = val;
-            imageData.data[i * 4 + 1] = val;
-            imageData.data[i * 4 + 2] = val;
-            imageData.data[i * 4 + 3] = 255;
+          for (let j = 0; j < 28 * 28; j++) {
+            const val = resized.data[j];
+            imageData.data[j * 4] = val;
+            imageData.data[j * 4 + 1] = val;
+            imageData.data[j * 4 + 2] = val;
+            imageData.data[j * 4 + 3] = 255;
           }
 
           const tempCanvas = document.createElement('canvas');
@@ -189,27 +201,25 @@ function App() {
             .reshape([1, 28, 28, 1]);
         });
 
-        // Predecir
         const pred = model.predict(inputTensor);
         const idx = pred.argMax(-1).dataSync()[0];
         const char = EMNIST_MAPPING[idx] || '?';
 
-        // Dibujar el resultado
-        ctx.clearRect(rect.x, rect.y, rect.width, rect.height);
+        ctx.fillStyle = 'white';
+        ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+
         ctx.fillStyle = 'blue';
         ctx.font = `${Math.min(rect.width, rect.height)}px Arial`;
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'center';
         ctx.fillText(char, rect.x + rect.width / 2, rect.y + rect.height / 2);
 
-        // Liberar memoria
         roi.delete();
         resized.delete();
         inputTensor.dispose();
         pred.dispose();
       }
 
-      // Liberar memoria
       src.delete();
       gray.delete();
       binary.delete();
@@ -233,10 +243,7 @@ function App() {
       <h1>Pizarra Inteligente EMNIST</h1>
       {error && <div className="error-message">{error}</div>}
       <div className="canvas-container">
-        <canvas 
-          ref={canvasRef} 
-          className="drawing-canvas"
-        />
+        <canvas ref={canvasRef} className="drawing-canvas" />
       </div>
       <div className="controls">
         <button onClick={clearCanvas} disabled={isModelLoading}>
