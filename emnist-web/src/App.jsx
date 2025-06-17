@@ -66,7 +66,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!canvasRef.current) return;
+    if (!canvasRef.current || !model) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -88,20 +88,37 @@ function App() {
       ctx.lineCap = 'round';
     };
 
+    // --- CAMBIO 1: Función unificada para obtener coordenadas ---
+    const getEventCoordinates = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      if (e.touches && e.touches.length > 0) {
+        // Evento Táctil
+        return [e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top];
+      }
+      // Evento de Mouse
+      return [e.clientX - rect.left, e.clientY - rect.top];
+    };
+
+    // --- CAMBIO 2: Modificar las funciones de dibujo ---
     const startDrawing = (e) => {
+      e.preventDefault(); // Evita el scroll en móviles
       drawing = true;
-      [lastX, lastY] = [e.offsetX, e.offsetY];
+      [lastX, lastY] = getEventCoordinates(e);
       hasDrawn = false;
       if (timeoutId) clearTimeout(timeoutId);
     };
 
     const draw = (e) => {
       if (!drawing) return;
+      e.preventDefault(); // Evita el scroll en móviles
+      
+      const [currentX, currentY] = getEventCoordinates(e);
       ctx.beginPath();
       ctx.moveTo(lastX, lastY);
-      ctx.lineTo(e.offsetX, e.offsetY);
+      ctx.lineTo(currentX, currentY);
       ctx.stroke();
-      [lastX, lastY] = [e.offsetX, e.offsetY];
+      [lastX, lastY] = [currentX, currentY];
+      
       hasDrawn = true;
       if (timeoutId) {
         clearTimeout(timeoutId);
@@ -120,118 +137,136 @@ function App() {
     };
 
     setupCanvas();
-
     window.addEventListener('resize', setupCanvas);
+
+    // --- CAMBIO 3: Añadir listeners para mouse y táctil ---
+    // Eventos de Mouse
     canvas.addEventListener('mousedown', startDrawing);
     canvas.addEventListener('mousemove', draw);
     canvas.addEventListener('mouseup', stopDrawing);
     canvas.addEventListener('mouseout', stopDrawing);
 
+    // Eventos Táctiles
+    canvas.addEventListener('touchstart', startDrawing, { passive: false });
+    canvas.addEventListener('touchmove', draw, { passive: false });
+    canvas.addEventListener('touchend', stopDrawing);
+    canvas.addEventListener('touchcancel', stopDrawing); // Por si el sistema interrumpe el toque
+
+    // --- CAMBIO 4: Limpiar todos los listeners ---
     return () => {
       window.removeEventListener('resize', setupCanvas);
+      // Mouse
       canvas.removeEventListener('mousedown', startDrawing);
       canvas.removeEventListener('mousemove', draw);
       canvas.removeEventListener('mouseup', stopDrawing);
       canvas.removeEventListener('mouseout', stopDrawing);
+      // Táctil
+      canvas.removeEventListener('touchstart', startDrawing);
+      canvas.removeEventListener('touchmove', draw);
+      canvas.removeEventListener('touchend', stopDrawing);
+      canvas.removeEventListener('touchcancel', stopDrawing);
+
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [model]);
+  }, [model]); // Dependencia del modelo para asegurar que se ejecuta cuando el modelo está listo
 
   const predictAll = async () => {
-    if (!model || !canvasRef.current) return;
+     // ... (Tu función predictAll se mantiene igual, no necesita cambios)
+   if (!model || !canvasRef.current) return;
 
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
+   const canvas = canvasRef.current;
+   const ctx = canvas.getContext('2d');
 
-    try {
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = canvas.width;
-      tempCanvas.height = canvas.height;
-      const tempCtx = tempCanvas.getContext('2d');
-      tempCtx.drawImage(canvas, 0, 0);
+   try {
+     const tempCanvas = document.createElement('canvas');
+     tempCanvas.width = canvas.width;
+     tempCanvas.height = canvas.height;
+     const tempCtx = tempCanvas.getContext('2d');
+     tempCtx.drawImage(canvas, 0, 0);
 
-      const src = cv.imread(tempCanvas);
-      const gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+     const src = cv.imread(tempCanvas);
+     const gray = new cv.Mat();
+     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
-      const binary = new cv.Mat();
-      cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+     const binary = new cv.Mat();
+     cv.threshold(gray, binary, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
 
-      const contours = new cv.MatVector();
-      const hierarchy = new cv.Mat();
-      cv.findContours(binary.clone(), contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+     const contours = new cv.MatVector();
+     const hierarchy = new cv.Mat();
+     cv.findContours(binary.clone(), contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-      let boundingRects = [];
+     let boundingRects = [];
 
-      for (let i = 0; i < contours.size(); ++i) {
-        const contour = contours.get(i);
-        const rect = cv.boundingRect(contour);
-        if (rect.width >= 20 && rect.height >= 20) {
-          boundingRects.push({ contour, rect });
-        }
-      }
+     for (let i = 0; i < contours.size(); ++i) {
+       const contour = contours.get(i);
+       const rect = cv.boundingRect(contour);
+       if (rect.width >= 20 && rect.height >= 20) {
+         boundingRects.push({ contour, rect });
+       }
+     }
 
-      boundingRects.sort((a, b) => a.rect.x - b.rect.x);
+     boundingRects.sort((a, b) => a.rect.x - b.rect.x);
 
-      for (let i = 0; i < boundingRects.length; ++i) {
-        const { contour, rect } = boundingRects[i];
-        const roi = binary.roi(rect);
-        const resized = new cv.Mat();
-        cv.resize(roi, resized, new cv.Size(28, 28), 0, 0, cv.INTER_AREA);
+     for (let i = 0; i < boundingRects.length; ++i) {
+       const { contour, rect } = boundingRects[i];
+       const roi = binary.roi(rect);
+       const resized = new cv.Mat();
+       cv.resize(roi, resized, new cv.Size(28, 28), 0, 0, cv.INTER_AREA);
 
-        const inputTensor = tf.tidy(() => {
-          const imageData = new ImageData(28, 28);
-          for (let j = 0; j < 28 * 28; j++) {
-            const val = resized.data[j];
-            imageData.data[j * 4] = val;
-            imageData.data[j * 4 + 1] = val;
-            imageData.data[j * 4 + 2] = val;
-            imageData.data[j * 4 + 3] = 255;
-          }
+       const inputTensor = tf.tidy(() => {
+         const imageData = new ImageData(28, 28);
+         for (let j = 0; j < 28 * 28; j++) {
+           const val = resized.data[j];
+           imageData.data[j * 4] = val;
+           imageData.data[j * 4 + 1] = val;
+           imageData.data[j * 4 + 2] = val;
+           imageData.data[j * 4 + 3] = 255;
+         }
 
-          const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = 28;
-          tempCanvas.height = 28;
-          const tempCtx = tempCanvas.getContext('2d');
-          tempCtx.putImageData(imageData, 0, 0);
+         const tempCanvas = document.createElement('canvas');
+         tempCanvas.width = 28;
+         tempCanvas.height = 28;
+         const tempCtx = tempCanvas.getContext('2d');
+         tempCtx.putImageData(imageData, 0, 0);
 
-          return tf.browser.fromPixels(tempCanvas, 1)
-            .toFloat()
-            .div(255.0)
-            .reshape([1, 28, 28, 1]);
-        });
+         return tf.browser.fromPixels(tempCanvas, 1)
+           .toFloat()
+           .div(255.0)
+           .reshape([1, 28, 28, 1]);
+       });
 
-        const pred = model.predict(inputTensor);
-        const idx = pred.argMax(-1).dataSync()[0];
-        const char = EMNIST_MAPPING[idx] || '?';
+       const pred = model.predict(inputTensor);
+       const idx = pred.argMax(-1).dataSync()[0];
+       const char = EMNIST_MAPPING[idx] || '?';
 
-        ctx.fillStyle = 'white';
-        ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+       ctx.fillStyle = 'white';
+       ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 
-        ctx.fillStyle = 'blue';
-        ctx.font = `${Math.min(rect.width, rect.height)}px Arial`;
-        ctx.textBaseline = 'middle';
-        ctx.textAlign = 'center';
-        ctx.fillText(char, rect.x + rect.width / 2, rect.y + rect.height / 2);
+       ctx.fillStyle = 'blue';
+       ctx.font = `${Math.min(rect.width, rect.height)}px Arial`;
+       ctx.textBaseline = 'middle';
+       ctx.textAlign = 'center';
+       ctx.fillText(char, rect.x + rect.width / 2, rect.y + rect.height / 2);
 
-        roi.delete();
-        resized.delete();
-        inputTensor.dispose();
-        pred.dispose();
-      }
+       roi.delete();
+       resized.delete();
+       inputTensor.dispose();
+       pred.dispose();
+     }
 
-      src.delete();
-      gray.delete();
-      binary.delete();
-      contours.delete();
-      hierarchy.delete();
-    } catch (err) {
-      console.error("Error en la predicción:", err);
-      setError(`Error en la predicción: ${err.message}`);
-    }
+     src.delete();
+     gray.delete();
+     binary.delete();
+     contours.delete();
+     hierarchy.delete();
+   } catch (err) {
+     console.error("Error en la predicción:", err);
+     setError(`Error en la predicción: ${err.message}`);
+   }
   };
 
   const clearCanvas = () => {
+    // ... (Tu función clearCanvas se mantiene igual)
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = 'white';
@@ -239,6 +274,7 @@ function App() {
   };
 
   return (
+    // ... (Tu JSX se mantiene igual)
     <div className="app-container">
       <h1>Pizarra Inteligente EMNIST</h1>
       {error && <div className="error-message">{error}</div>}
